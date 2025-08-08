@@ -22,11 +22,8 @@ struct __kstatfs_info
     u32 fs_magic;
 }; 
 
-extern const struct inode_operations demo_inode_ops;
-extern const struct file_operations demo_file_ops;
+static struct inode_operations demo_inode_file_ops; 
+static struct file_operations demo_file_ops;
 
-int demo_create(struct mnt_idmap *idmap, ,struct inode *dir,
-                struct dentry *dentry, umode_t mode, bool excl); 
-
-
+int demo_create(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry, umode_t mode, bool excl);
 #endif // !FS_INFO_H 

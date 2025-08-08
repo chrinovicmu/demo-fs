@@ -43,9 +43,8 @@ static struct super_operations demofs_super_ops =
         .drop_inode
 }; 
 
-static struct inode_operations = 
+static struct inode_dir_operations = 
 {
-
 
 
 }
