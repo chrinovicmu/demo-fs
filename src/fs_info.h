@@ -25,5 +25,7 @@ struct __kstatfs_info
 static struct inode_operations demo_inode_file_ops; 
 static struct file_operations demo_file_ops;
 
-int demo_create(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry, umode_t mode, bool excl);
+int demofs_create(struct mnt_idmap*, struct inode*, struct dentry*, umode_t, bool);
+static struct dentry *demofs_lookup(struct inode *, struct dentry*, unsigned int); 
+
 #endif // !FS_INFO_H 

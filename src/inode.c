@@ -6,6 +6,10 @@
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 #include "fs_info.h"
+#include "linux/cred.h"
+#include "linux/dcache.h"
+#include "linux/export.h"
+#include "linux/stat.h"
 
 static int demo_open(struct inode*, struct file*);
 static int demo_release(struct inode*, struct file*); 
@@ -142,7 +146,7 @@ static ssize_t demo_write(struct file * filp, const char __user * ubuf, size_t l
     return bytes_to_write;
 }
 
-static const struct file_operations demo_file_ops = 
+static struct file_operations demo_file_ops = 
 {
         .owner = THIS_MODULE, 
         .open = demo_open, 
@@ -151,14 +155,33 @@ static const struct file_operations demo_file_ops =
         .write = demo_write, 
 }; 
 
-static const struct inode_operations demo_inode_file_ops = 
+static struct inode_operations demo_inode_file_ops = 
 {
         .setattr = simple_setattr, 
         .getattr = simple_getattr, 
 }; 
 
-int demo_create(struct mnt_idmap *idmap, struct inode *dir,
-                struct dentry *dentry, umode_t mode, bool excl)
+
+static int demofs_readir(struct file *file, struct dir_context *ctx)
+{
+    pr_info("%s: readdir called\n", FS_NAME); 
+
+
+    if(!dir_emit(file, ctx))
+        return 0; 
+
+    return 0; 
+}
+
+const struct file_operations demofs_inode_dir_ops = 
+{
+        .owner = THIS_MODULE 
+        .iterate_shared =  demofs_readir, 
+}; 
+
+
+int demo_create(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
+                umode_t mode, bool excl)
 {
     struct inode *inode;
 
@@ -187,3 +210,37 @@ int demo_create(struct mnt_idmap *idmap, struct inode *dir,
 
     return 0;
 }
+
+/*
+static struct dentry *demofs_looup(struct inode *parent_inode, struct dentry *child_entry,                                 unsigned int flags)
+{
+    struct inode *inode = NULL; 
+    pr_info("%s: lookup for '%s'\n", FS_NAME, child_entry->d_name.name); 
+}
+*/
+
+static int demofs_mkdir(struct inode *parent_inode, struct dentry *child_entry, umode_t mode)
+{
+    struct inode *inode; 
+
+    inode = new_inode(parent_inode->i_sb); 
+    if(inode)
+        return -ENOMEM; 
+
+    inode->i_ino = get_next_ino(); 
+
+    inode_init_owner(&init_user_ns, inode, parent_inode, S_IFDIR | mode); 
+    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode); 
+
+    inode->i_op = &demofs_inode_dir_ops; 
+    inode->i_fop = &simple_dir_operations; 
+
+    /*add parent directory */ 
+    inc_nlink(parent_inode); 
+    d_instantiate(child_entry, inode); 
+    dget(child_entry); 
+
+    return 0; what
+}
+
+
