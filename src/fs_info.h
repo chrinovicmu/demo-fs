@@ -1,9 +1,10 @@
 #ifndef FS_INFO_H 
 #define FS_INFO_H
 
-#include "linux/dcache.h"
-#include "linux/fs.h"
+#include <linux/dcache.h> 
+#include <linux/fs.h>
 #include <linux/types.h>
+#include "my_idmap.h"
 
 #define DEMO_MAJIC 0x12345678 
 #define FS_NAME "demo_fs"
@@ -25,7 +26,7 @@ struct __kstatfs_info
 static struct inode_operations demo_inode_file_ops; 
 static struct file_operations demo_file_ops;
 
-int demofs_create(struct mnt_idmap*, struct inode*, struct dentry*, umode_t, bool);
-static struct dentry *demofs_lookup(struct inode *, struct dentry*, unsigned int); 
+static int demofs_create(struct mnt_idmap*, struct inode*, struct dentry*, umode_t, bool);
+static int demofs_mkdir(struct inode *, struct dentry*, umode_t); 
 
 #endif // !FS_INFO_H 

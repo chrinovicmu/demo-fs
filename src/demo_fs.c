@@ -10,6 +10,7 @@
 #include "linux/gfp_types.h"
 #include "linux/slab.h"
 #include "linux/stat.h"
+#include "fs_info.h"
 
 #define DEMOFS_MAGIC 0x12345678 
 
@@ -39,14 +40,17 @@ static int demofs_statfs(struct dentry *dentry, struct kstatfs *buf)
 
 static struct super_operations demofs_super_ops =
 {
-        .statfs = demofs_statfs, 
-        .drop_inode
+        .statfs = demofs_statfs,  
 }; 
 
-static struct inode_operations inode_dir_operations = 
+static struct inode_operations demofs_root_dir_iops = 
 {
 
-}
+}; 
+static struct file_operations demofs_root_dir_fops =   
+{
+
+}; 
 
 static int demofs_fill_super(struct super_block *sb, void * data, int silent)
 {
@@ -78,8 +82,8 @@ static int demofs_fill_super(struct super_block *sb, void * data, int silent)
     inode_init_owner(root_inode, NULL, S_IFREG | 0644); 
     root_inode->i_sb = sb; 
     root_inode->i_atime = root_inode->i_ctime = current_time(root_inode); 
-    root_inode->i_fop = demofs_dir_operations; 
-    root_inode->i_op = demofs_dir_inode_operations; 
+    root_inode->i_fop = &demofs_root_dir_fops; 
+    root_inode->i_op = &demofs_root_dir_iops;  
 
     sb->s_root = d_make_root(root_inode); 
 }
