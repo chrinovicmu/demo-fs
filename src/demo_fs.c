@@ -1,15 +1,9 @@
-#include <cstddef>
 #include <linux/init.h>
 #include <linux/printk.h>
 #include <linux/dcache.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/statfs.h>
-#include "asm/page_types.h"
-#include "fs_info.h"
-#include "linux/gfp_types.h"
-#include "linux/slab.h"
-#include "linux/stat.h"
 #include "fs_info.h"
 
 #define DEMOFS_MAGIC 0x12345678 
@@ -45,8 +39,18 @@ static struct super_operations demofs_super_ops =
 
 static struct inode_operations demofs_root_dir_iops = 
 {
-
+        .create     = demofs_create, 
+        .mkdir      = demofs_mkdir,
+        .mknod      = demofs_mknod,
+        
+        .lookup     = simple_lookup, 
+        .unlink     = simple_unlink, 
+        .rmdir      = simple_rmdir, 
+        .rename     = simple_rename, 
+        .getattr    = simple_getattr,
+        .permission = generic_permission, 
 }; 
+
 static struct file_operations demofs_root_dir_fops =   
 {
 
@@ -101,11 +105,11 @@ static void demofs_kill_sb(struct super_block *sb)
 
 static struct file_system_type demofs_type = 
 {
-        .owner = THIS_MODULE, 
-        .name = (const char)FS_MAME, 
-        .mount = demofs_mount, 
-        .kill_sb = demofs_kill_sb, 
-        .fs_flags = 0, 
+        .owner      = THIS_MODULE, 
+        .name       = FS_NAME, 
+        .mount      = demofs_mount, 
+        .kill_sb    = demofs_kill_sb, 
+        .fs_flags   = 0, 
 }; 
 
 static int __init demofs_init(void)

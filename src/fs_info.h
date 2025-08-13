@@ -4,6 +4,7 @@
 #include <linux/dcache.h> 
 #include <linux/fs.h>
 #include <linux/types.h>
+#include "linux/cred.h"
 #include "my_idmap.h"
 
 #define DEMO_MAJIC 0x12345678 
@@ -23,10 +24,26 @@ struct __kstatfs_info
     u32 fs_magic;
 }; 
 
-static struct inode_operations demo_inode_file_ops; 
-static struct file_operations demo_file_ops;
+static int demofs_create(struct user_namespace *mnt_userns,
+                         struct inode *dir,
+                         struct dentry *dentry,
+                         umode_t mode,
+                         bool excl);
 
-static int demofs_create(struct mnt_idmap*, struct inode*, struct dentry*, umode_t, bool);
-static int demofs_mkdir(struct inode *, struct dentry*, umode_t); 
+static int demofs_mkdir(struct user_namespace *mnt_userns,
+                        struct inode *dir,
+                        struct dentry *dentry,
+                        umode_t mode);
 
+static int demofs_mknod(struct user_namespace *mnt_userns,
+                        struct inode *dir,
+                        struct dentry *dentry,
+                        umode_t mode,
+                        dev_t dev);
+
+static int demofs_symlink(struct user_namespace *mnt_userns,
+                          struct inode *dir,
+                          struct dentry *dentry,
+                          const char *symname);
+ 
 #endif // !FS_INFO_H 

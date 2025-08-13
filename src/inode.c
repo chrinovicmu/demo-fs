@@ -1,4 +1,3 @@
-
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/printk.h>
@@ -21,96 +20,81 @@ static int demofs_open(struct inode*, struct file*);
 static int demofs_release(struct inode*, struct file*); 
 static ssize_t demofs_read(struct file *, char __user *, size_t, loff_t*);
 static ssize_t demofs_write(struct file *, const char __user*, size_t, loff_t*); 
+static int demofs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, struct iattr *iattr);
 
-enum demo_file_state
+enum demofs_file_state
 {
     FILE_NOT_USED, 
-    FILE_EXCULSIVE_OPEN, 
+    FILE_EXCLUSIVE_OPEN, 
 }; 
 
-struct demo_file_info  
+struct demofs_file_info  
 {
     atomic_t already_open; 
-    char *inode_kbuf;
-    size_t inode_data_size; 
+    char *kbuf;
+    size_t data_size; 
     int error_pending; 
 }; 
 
 static int demofs_open(struct inode *inode, struct file *file)
 {
-    struct demo_file_info *inode_info; 
+    struct demofs_file_info *info = inode->i_private; 
 
-    inode_info = kmalloc(sizeof(*inode_info), GFP_KERNEL); 
-    if(NULL == inode_info)
-        return -ENOMEM; 
+    if (!info)
+        return -EINVAL;
 
-    atomic_set(&inode_info->already_open, FILE_NOT_USED); 
-    inode_info->inode_kbuf = NULL; 
-    inode_info->inode_data_size = 0; 
-    inode_info->error_pending = 0; 
+    if (atomic_cmpxchg(&info->already_open, FILE_NOT_USED, FILE_EXCLUSIVE_OPEN) != FILE_NOT_USED)
+        return -EBUSY;
 
-   if(atomic_cmpxchg(&inode_info->already_open, FILE_NOT_USED, FILE_EXCULSIVE_OPEN) != FILE_NOT_USED)
-    {
-        kfree(inode_info); 
-        inode_info = NULL; 
-        return -EBUSY; 
-    }
-    file->private_data = inode_info; 
+    file->private_data = info; 
 
-    pr_info("%s: File opened: %s\n", FS_NAME, file->f_path.dentry->d_name);
-
-    if(!try_module_get(THIS_MODULE))
-    {
-        pr_err("Failed to get module reference\n");
-        kfree(inode_info);
-        inode_info = NULL; 
+    if (!try_module_get(THIS_MODULE)) {
+        atomic_set(&info->already_open, FILE_NOT_USED);
         return -ENODEV; 
     }
 
-    pr_info("%s: File opened: %s\n", FS_NAME, file->f_path.dentry->d_name);
+    pr_info("%s: File opened: %s\n", FS_NAME, file->f_path.dentry->d_name.name);
     return 0; 
 }
+
 static int demofs_release(struct inode *inode, struct file *file)
 {
-    struct demo_file_info *inode_info = file->private_data; 
-    if(!inode_info)
+    struct demofs_file_info *info = file->private_data; 
+    if (!info)
         return 0; 
 
-    atomic_set(&inode_info->already_open, FILE_NOT_USED); 
-    kfree(inode_info->inode_kbuf);
-    kfree(inode_info); 
-    
+    atomic_set(&info->already_open, FILE_NOT_USED); 
     file->private_data = NULL; 
     module_put(THIS_MODULE); 
 
-    pr_info("%s: File closed: %s", FS_NAME, file->f_path.dentry->d_name); 
+    pr_info("%s: File closed: %s\n", FS_NAME, file->f_path.dentry->d_name.name); 
     return 0; 
 }
 
-static ssize_t demofs_read(struct file * filp, char __user * ubuf, size_t len, loff_t *off)
+static ssize_t demofs_read(struct file *filp, char __user *ubuf, size_t len, loff_t *off)
 {
-    struct demo_file_info *inode_info = filp->private_data; 
+    struct demofs_file_info *info = filp->private_data; 
     size_t bytes_to_read; 
 
-    if(!inode_info || !inode_info->inode_kbuf)
+    if (!info || !info->kbuf)
         return 0; 
 
-    if(inode_info->error_pending)
+    if (info->error_pending)
     {
-        int err = inode_info->error_pending; 
-        inode_info->error_pending = 0; 
+        int err = info->error_pending; 
+        info->error_pending = 0; 
         return err; 
     }
 
-    if(*off > inode_info->inode_data_size)
+    if (*off >= info->data_size) 
     {
-        pr_info("%s: Read at EOF, offset %lld, size %zu\n", FS_NAME, *off, inode_info->inode_data_size); 
+        pr_info("%s: Read at EOF, offset %lld, size %zu\n", FS_NAME, *off, info->data_size); 
         return 0; 
     }
 
-    bytes_to_read = min(len, inode_info->inode_data_size - *off); 
+    bytes_to_read = min(len, info->data_size - *off); 
     
-    if(copy_to_user(ubuf, inode_info->inode_kbuf + *off, bytes_to_read))
+    if (copy_to_user(ubuf, info->kbuf + *off, bytes_to_read))
         return -EFAULT; 
 
     *off += bytes_to_read; 
@@ -120,30 +104,30 @@ static ssize_t demofs_read(struct file * filp, char __user * ubuf, size_t len, l
     return bytes_to_read; 
 }
 
-static ssize_t demofs_write(struct file * filp, const char __user * ubuf, size_t len, loff_t *off)
+static ssize_t demofs_write(struct file *filp, const char __user *ubuf, size_t len, loff_t *off)
 {
-    struct demo_file_info *inode_info = filp->private_data;
+    struct demofs_file_info *info = filp->private_data;
     size_t bytes_to_write;
     
-    if(!inode_info || !inode_info->inode_kbuf)
+    if (!info || !info->kbuf)
         return -EINVAL;
     
-    if(inode_info->error_pending)
+    if (info->error_pending) 
     {
-        int err = inode_info->error_pending;
-        inode_info->error_pending = 0;
+        int err = info->error_pending;
+        info->error_pending = 0;
         return err;
     }
     
-    if(*off > inode_info->inode_data_size)
+    if (*off > info->data_size) 
     {
-        pr_info("%s: Write beyond EOF, offset %lld, size %zu\n", FS_NAME, *off, inode_info->inode_data_size);
+        pr_info("%s: Write beyond EOF, offset %lld, size %zu\n", FS_NAME, *off, info->data_size);
         return -EINVAL;
     }
     
-    bytes_to_write = min(len, inode_info->inode_data_size - *off);
+    bytes_to_write = min(len, info->data_size - *off);
     
-    if(copy_from_user(inode_info->inode_kbuf + *off, ubuf, bytes_to_write))
+    if (copy_from_user(info->kbuf + *off, ubuf, bytes_to_write))
         return -EFAULT;
     
     *off += bytes_to_write;
@@ -152,45 +136,42 @@ static ssize_t demofs_write(struct file * filp, const char __user * ubuf, size_t
     return bytes_to_write;
 }
 
-static struct file_operations demo_file_ops = 
+static struct file_operations demofs_file_fops = 
 {
-        .owner = THIS_MODULE, 
-        .open = demofs_open, 
-        .release = demofs_release, 
-        .read = demofs_read, 
-        .write = demofs_write, 
+    .owner      = THIS_MODULE, 
+    .open       = demofs_open, 
+    .release    = demofs_release, 
+    .read       = demofs_read, 
+    .write      = demofs_write, 
 }; 
 
-static struct inode_operations demo_inode_file_ops = 
+static struct inode_operations demofs_file_iops = 
 {
-        .setattr = simple_setattr, 
-        .getattr = simple_getattr, 
+    .setattr = demofs_setattr, 
+    .getattr = simple_getattr, 
 }; 
 
-static int demofs_readir(struct file *file, struct dir_context *ctx)
+static int demofs_iterate(struct file *file, struct dir_context *ctx)
 {
     struct inode *inode = file_inode(file); 
     u64 ino = inode->i_ino; 
 
     pr_info("%s: readdir called\n", FS_NAME); 
 
-    if(ctx->pos == 0)
-    {
-        if(!dir_emit(ctx, ".", 1, ino, DT_DIR))
+    if (ctx->pos == 0) {
+        if (!dir_emit(ctx, ".", 1, ino, DT_DIR))
             return 0; 
         ctx->pos++; 
     }
 
-    if(ctx->pos ==1)
-    {
-        if(!dir_emit(ctx, "..", 2, 2, DT_DIR))
+    if (ctx->pos == 1) {
+        if (!dir_emit(ctx, "..", 2, 2, DT_DIR))
             return 0; 
         ctx->pos++; 
     }
 
-    if(ctx->pos == 2)
-    {
-        if(!dir_emit(ctx, "file1", 5, 12345, DT_REG))
+    if (ctx->pos == 2) {
+        if (!dir_emit(ctx, "file1", 5, 12345, DT_REG))
             return 0; 
         ctx->pos++; 
     }
@@ -198,83 +179,147 @@ static int demofs_readir(struct file *file, struct dir_context *ctx)
     return 0; 
 }
 
-static const struct file_operations demofs_subdir_file_ops = 
+static const struct file_operations demofs_dir_fops = 
 {
-        .read_iter = generic_file_read_iter,  
-        .write_iter = generic_file_write_iter,
-        .mmap = generic_file_mmap, 
-        .open = generic_file_open, 
+    .iterate_shared = demofs_iterate,
 }; 
 
-static const struct inode_operations demofs_subdir_inode_ops = 
+static const struct inode_operations demofs_dir_iops = 
 {
-        .getattr = simple_getattr, 
+    .lookup     = simple_lookup, 
+    .create     = demofs_subdir_create, 
+    .mkdir      = demofs_subdir_mkdir, 
+    .unlink     = simple_unlink, 
+    .rmdir      = simple_rmdir, 
+    .rename     = simple_rename, 
+    .getattr    = simple_getattr, 
 }; 
 
-static int demofs_subdir_create(struct user_namespace *mnt_usersns, struct inode *parent_inode, 
-                                struct dentry *child_dentry, umode_t mode, bool excl)
+static int demofs_subdir_create(struct user_namespace *mnt_userns, struct inode *dir, 
+                                struct dentry *dentry, umode_t mode, bool excl)
 {
     struct inode *inode; 
+    struct demofs_file_info *info;
 
-    inode = new_inode(parent_inode->i_sb); 
-    if(NULL == inode)
+    inode = new_inode(dir->i_sb); 
+    if (!inode)
         return -ENOMEM; 
 
+    info = kzalloc(sizeof(*info), GFP_KERNEL);
+    if (!info) {
+        iput(inode);
+        return -ENOMEM;
+    }
+
+    atomic_set(&info->already_open, FILE_NOT_USED); 
+    info->kbuf = NULL; 
+    info->data_size = 0; 
+    info->error_pending = 0; 
+
+    inode->i_private = info;
     inode->i_ino = get_next_ino(); 
-    inode_init_owner(mnt_usersns, inode, parent_inode, mode); 
+    inode_init_owner(mnt_userns, inode, dir, mode); 
     inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode); 
     
-    inode->i_op = &demofs_subdir_inode_ops; 
-    inode->i_fop = &demofs_subdir_file_ops; 
+    inode->i_op = &demofs_file_iops; 
+    inode->i_fop = &demofs_file_fops; 
 
-    d_instantiate(child_dentry, inode);
-    inc_nlink(parent_inode);
-    mark_inode_dirty(parent_inode); 
+    d_instantiate(dentry, inode);
+    inc_nlink(dir);
+    mark_inode_dirty(dir); 
 
     return 0; 
 }
 
-static int demofs_subdir_mkdir(struct user_namespace *mnt_usersns, struct inode *parent_inode,
-                               struct dentry *child_entry, umode_t mode)
+static int demofs_subdir_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
+                               struct dentry *dentry, umode_t mode)
 {
     struct inode *inode; 
 
-    inode = new_inode(parent_inode->i_sb); 
-    if(NULL == inode)
+    inode = new_inode(dir->i_sb); 
+    if (!inode)
         return -ENOMEM; 
 
     inode->i_ino = get_next_ino(); 
-    inode_init_owner(mnt_usersns, inode, parent_inode, S_IFDIR | mode); 
+    inode_init_owner(mnt_userns, inode, dir, S_IFDIR | mode); 
     inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode); 
 
-    inode->i_op = &demofs_subdir_inode_ops; 
-    inode->i_fop = &simple_dir_operations; 
+    inode->i_op = &demofs_dir_iops; 
+    inode->i_fop = &demofs_dir_fops; 
 
     inode->i_nlink = 2; 
-    inc_nlink(parent_inode);
-    d_instantiate(child_entry, inode);
-    dget(child_entry); 
-    mark_inode_dirty(parent_inode); 
+    inc_nlink(dir);
+    d_instantiate(dentry, inode);
+    dget(dentry); 
+    mark_inode_dirty(dir); 
 
     return 0; 
 }
 
-const struct inode_operations demofs_subdir_iops = 
+const struct inode_operations demofs_special_iops = 
 {
-        .lookup = simple_lookup, 
-        .create = demofs_subdir_create, 
-        .mkdir = demofs_subdir_mkdir, 
-        .unlink = simple_unlink, 
-        .rmdir = simple_rmdir, 
-        .rename = simple_rename, 
-        .getattr = simple_getattr, 
+    .getattr = simple_getattr, 
 }; 
 
-
- int demofs_create(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
-                umode_t mode, bool excl)
+static struct inode *demofs_make_inode(struct user_namespace *mnt_userns,
+                                       struct super_block *sb,
+                                       umode_t mode,
+                                       dev_t dev)
 {
     struct inode *inode;
+    struct demofs_file_info *info = NULL;
+
+    inode = new_inode(sb);
+    if (!inode)
+        return NULL;
+
+    if (S_ISREG(mode)) 
+    {
+        info = kzalloc(sizeof(*info), GFP_KERNEL);
+        if (!info) 
+        {
+            iput(inode);
+            return NULL;
+        }
+        atomic_set(&info->already_open, FILE_NOT_USED); 
+        info->kbuf = NULL; 
+        info->data_size = 0; 
+        info->error_pending = 0; 
+        inode->i_private = info;
+    }
+
+    inode_init_owner(mnt_userns, inode, NULL, mode);
+    inode->i_ino = get_next_ino();
+    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+
+    if (S_ISREG(mode)) 
+    {
+        inode->i_op = &demofs_file_iops;
+        inode->i_fop = &demofs_file_fops;
+
+    } else if (S_ISDIR(mode)) 
+    {
+        inode->i_op = &demofs_dir_iops;
+        inode->i_fop = &demofs_dir_fops;
+        inc_nlink(inode);
+
+    } else if (S_ISCHR(mode) || S_ISBLK(mode) || S_ISFIFO(mode) || S_ISSOCK(mode)) 
+    {
+        init_special_inode(inode, mode, dev);
+        inode->i_op = &demofs_special_iops;
+    }
+
+    return inode;
+}
+
+int demofs_create(struct user_namespace *mnt_userns,
+                  struct inode *dir,
+                  struct dentry *dentry,
+                  umode_t mode,
+                  bool excl)
+{
+    struct inode *inode;
+    struct demofs_file_info *info;
 
     if (d_inode(dentry))
         return -EEXIST;
@@ -283,54 +328,135 @@ const struct inode_operations demofs_subdir_iops =
     if (!inode)
         return -ENOMEM;
 
-    /* Map the current process's uid/guid to mnt_idmap */
-    inode->i_uid = mnt_idmap_map_user(idmap, current_fsuid());
-    inode->i_gid = mnt_idmap_map_group(idmap, current_fsgid());
+    info = kzalloc(sizeof(*info), GFP_KERNEL);
+    if (!info) 
+    {
+        iput(inode);
+        return -ENOMEM;
+    }
+
+    atomic_set(&info->already_open, FILE_NOT_USED); 
+    info->kbuf = NULL; 
+    info->data_size = 0; 
+    info->error_pending = 0; 
+    inode->i_private = info;
+
+    inode->i_uid = make_kuid(mnt_userns, from_kuid(&init_user_ns, current_fsuid()));
+    inode->i_gid = make_kgid(mnt_userns, from_kgid(&init_user_ns, current_fsgid()));
     inode->i_mode = mode;
 
-    inode->i_op = &demo_inode_file_ops; 
-    inode->i_fop = &demo_file_ops;
+    inode->i_op = &demofs_file_iops; 
+    inode->i_fop = &demofs_file_fops;
 
     inode->i_mtime = inode->i_ctime = inode->i_atime = current_time(inode);
 
     d_instantiate(dentry, inode);
-
     dget(dentry);
+
     mark_inode_dirty(inode);
 
     return 0;
 }
 
-/*
-static struct dentry *demofs_looup(struct inode *parent_inode, struct dentry *child_entry,                                 unsigned int flags)
+static int demofs_mkdir(struct user_namespace *mnt_userns,
+                        struct inode *dir,
+                        struct dentry *dentry,
+                        umode_t mode)
 {
-    struct inode *inode = NULL; 
-    pr_info("%s: lookup for '%s'\n", FS_NAME, child_entry->d_name.name); 
-}
-*/
+    struct inode *inode;
 
-static int demofs_mkdir(struct inode *parent_inode, struct dentry *child_entry, umode_t mode)
-{
-    struct inode *inode; 
+    inode = new_inode(dir->i_sb);
+    if (!inode)
+        return -ENOMEM;
 
-    inode = new_inode(parent_inode->i_sb); 
-    if(NULL == inode)
-        return -ENOMEM; 
+    inode->i_ino = get_next_ino();
 
-    inode->i_ino = get_next_ino(); 
+    inode_init_owner(mnt_userns, inode, dir, S_IFDIR | mode);
+    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
 
-    inode_init_owner(&init_user_ns, inode, parent_inode, S_IFDIR | mode); 
-    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode); 
+    inode->i_op = &demofs_dir_iops;
+    inode->i_fop = &demofs_dir_fops;
 
-    inode->i_op = &demofs_subdir_iops; 
-    inode->i_fop = &simple_dir_operations; 
-
-    /*add parent directory */ 
-    inc_nlink(parent_inode); 
-    d_instantiate(child_entry, inode); 
-    dget(child_entry); 
+    inc_nlink(dir);
+    d_instantiate(dentry, inode);
+    dget(dentry);
 
     return 0;
 }
 
+static int demofs_mknod(struct user_namespace *mnt_userns,
+                        struct inode *dir,
+                        struct dentry *dentry,
+                        umode_t mode,
+                        dev_t dev)
+{
+    struct inode *inode;
 
+    inode = demofs_make_inode(mnt_userns, dir->i_sb, mode, dev);
+    if (!inode)
+        return -ENOMEM;
+
+    d_instantiate(dentry, inode);
+    dir->i_mtime = dir->i_ctime = current_time(dir);
+
+    return 0;
+}
+
+static int demofs_symlink(struct user_namespace *mnt_userns,
+                          struct inode *dir,
+                          struct dentry *dentry, 
+                          const char *symname)
+{
+    struct inode *inode; 
+
+    if (d_inode(dentry))
+        return -EEXIST; 
+
+    inode = new_inode(dir->i_sb); 
+    if (!inode)
+        return -ENOMEM; 
+
+    inode_init_owner(mnt_userns, inode, dir, S_IFLNK | 0777); 
+    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode); 
+
+    inode->i_op = &simple_symlink_inode_operations; 
+    inode->i_size = strlen(symname); 
+
+    d_instantiate(dentry, inode); 
+    dget(dentry); 
+
+    return page_symlink(inode, symname, strlen(symname)); 
+}
+
+
+static int demofs_setattr(struct user_namespace *mnt_userns,
+                          struct dentry *dentry,
+                          struct iattr *iattr)
+{
+    struct inode *inode = d_inode(dentry);
+    struct demofs_file_info *info = inode->i_private;
+    int error;
+
+    error = setattr_prepare(mnt_userns, dentry, iattr);
+    if (error)
+        return error;
+
+    if ((iattr->ia_valid & ATTR_SIZE) && iattr->ia_size != inode->i_size) 
+    {
+        char *new_buf = krealloc(info->kbuf, iattr->ia_size, GFP_KERNEL);
+        if (!new_buf && iattr->ia_size > 0)
+            return -ENOMEM;
+
+        if (iattr->ia_size > info->data_size)
+            memset(new_buf + info->data_size, 0, iattr->ia_size - info->data_size);
+
+        info->kbuf = new_buf;
+        info->data_size = iattr->ia_size;
+        truncate_setsize(inode, iattr->ia_size);
+    }
+
+    setattr_copy(mnt_userns, inode, iattr);
+
+    mark_inode_dirty(inode);
+    return 0;
+} 
