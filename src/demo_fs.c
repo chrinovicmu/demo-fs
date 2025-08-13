@@ -42,7 +42,8 @@ static struct inode_operations demofs_root_dir_iops =
         .create     = demofs_create, 
         .mkdir      = demofs_mkdir,
         .mknod      = demofs_mknod,
-        
+        .setattr    = demofs_setattr, 
+        .symlink    = demofs_symlink, 
         .lookup     = simple_lookup, 
         .unlink     = simple_unlink, 
         .rmdir      = simple_rmdir, 
@@ -78,7 +79,7 @@ static int demofs_fill_super(struct super_block *sb, void * data, int silent)
 
     sb->s_fs_info = stats; 
     sb->s_magic = stats->fs_magic; 
-    sb->s_op = demofs_super_ops;
+    sb->s_op = &demofs_super_ops;
     sb->s_blocksize = stats->block_size; 
     sb->s_blocksize_bits = PAGE_SHIFT; 
 

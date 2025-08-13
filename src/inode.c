@@ -5,7 +5,6 @@
 #include <linux/atomic.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
-
 #include <linux/cred.h>
 #include <linux/dcache.h>
 #include <linux/export.h>
@@ -71,7 +70,8 @@ static int demofs_release(struct inode *inode, struct file *file)
     return 0; 
 }
 
-static ssize_t demofs_read(struct file *filp, char __user *ubuf, size_t len, loff_t *off)
+static ssize_t demofs_read(struct file *filp, char __user *ubuf,
+                           size_t len, loff_t *off)
 {
     struct demofs_file_info *info = filp->private_data; 
     size_t bytes_to_read; 
@@ -104,7 +104,8 @@ static ssize_t demofs_read(struct file *filp, char __user *ubuf, size_t len, lof
     return bytes_to_read; 
 }
 
-static ssize_t demofs_write(struct file *filp, const char __user *ubuf, size_t len, loff_t *off)
+static ssize_t demofs_write(struct file *filp, const char __user *ubuf, 
+                            size_t len, loff_t *off)
 {
     struct demofs_file_info *info = filp->private_data;
     size_t bytes_to_write;
@@ -195,8 +196,11 @@ static const struct inode_operations demofs_dir_iops =
     .getattr    = simple_getattr, 
 }; 
 
-static int demofs_subdir_create(struct user_namespace *mnt_userns, struct inode *dir, 
-                                struct dentry *dentry, umode_t mode, bool excl)
+static int demofs_subdir_create(struct user_namespace *mnt_userns,
+                                struct inode *dir, 
+                                struct dentry *dentry,
+                                umode_t mode,
+                                bool excl)
 {
     struct inode *inode; 
     struct demofs_file_info *info;
@@ -231,8 +235,10 @@ static int demofs_subdir_create(struct user_namespace *mnt_userns, struct inode 
     return 0; 
 }
 
-static int demofs_subdir_mkdir(struct user_namespace *mnt_userns, struct inode *dir,
-                               struct dentry *dentry, umode_t mode)
+static int demofs_subdir_mkdir(struct user_namespace *mnt_userns,
+                               struct inode *dir,
+                               struct dentry *dentry,
+                               umode_t mode)
 {
     struct inode *inode; 
 
@@ -282,6 +288,7 @@ static struct inode *demofs_make_inode(struct user_namespace *mnt_userns,
             return NULL;
         }
         atomic_set(&info->already_open, FILE_NOT_USED); 
+
         info->kbuf = NULL; 
         info->data_size = 0; 
         info->error_pending = 0; 
@@ -336,6 +343,7 @@ int demofs_create(struct user_namespace *mnt_userns,
     }
 
     atomic_set(&info->already_open, FILE_NOT_USED); 
+
     info->kbuf = NULL; 
     info->data_size = 0; 
     info->error_pending = 0; 
@@ -370,41 +378,67 @@ static int demofs_mkdir(struct user_namespace *mnt_userns,
         return -ENOMEM;
 
     inode->i_ino = get_next_ino();
+
     inode_init_owner(mnt_userns, inode, dir, S_IFDIR | mode);
     inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+
     inode->i_op = &demofs_dir_iops;
     inode->i_fop = &demofs_dir_fops;
+
     inc_nlink(dir);
     d_instantiate(dentry, inode);
     dget(dentry);
+
     return 0;
 }
-static int demofs_mknod(struct user_namespace *mnt_userns, struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
+
+static int demofs_mknod(struct user_namespace *mnt_userns,
+                        struct inode *dir,
+                        struct dentry *dentry,
+                        umode_t mode,
+                        dev_t dev)
 {
     struct inode *inode;
+
     inode = demofs_make_inode(mnt_userns, dir->i_sb, mode, dev);
     if (!inode)
         return -ENOMEM;
+
     d_instantiate(dentry, inode);
     dir->i_mtime = dir->i_ctime = current_time(dir);
+
     return 0;
 }
-static int demofs_symlink(struct user_namespace *mnt_userns, struct inode *dir, struct dentry *dentry, const char *symname){
+
+static int demofs_symlink(struct user_namespace *mnt_userns,
+                          struct inode *dir,
+                          struct dentry *dentry, 
+                          const char *symname)
+{
     struct inode *inode; 
+
     if (d_inode(dentry))
         return -EEXIST; 
+
     inode = new_inode(dir->i_sb); 
     if (!inode)
         return -ENOMEM; 
+
     inode_init_owner(mnt_userns, inode, dir, S_IFLNK | 0777); 
     inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode); 
+
     inode->i_op = &simple_symlink_inode_operations; 
     inode->i_size = strlen(symname); 
+
     d_instantiate(dentry, inode); 
     dget(dentry); 
+
     return page_symlink(inode, symname, strlen(symname)); 
 }
-static int demofs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry, struct iattr *iattr)
+
+static int demofs_setattr(struct user_namespace *mnt_userns, 
+                          struct dentry *dentry,
+                          struct iattr *iattr)
 {
     struct inode *inode = d_inode(dentry);
     struct demofs_file_info *info = inode->i_private;
@@ -417,14 +451,18 @@ static int demofs_setattr(struct user_namespace *mnt_userns, struct dentry *dent
     if ((iattr->ia_valid & ATTR_SIZE) && iattr->ia_size != inode->i_size) 
     {
         char *new_buf = krealloc(info->kbuf, iattr->ia_size, GFP_KERNEL);
+
         if (!new_buf && iattr->ia_size > 0)
             return -ENOMEM;
+
         if (iattr->ia_size > info->data_size)
             memset(new_buf + info->data_size, 0, iattr->ia_size - info->data_size);
+
         info->kbuf = new_buf;
         info->data_size = iattr->ia_size;
         truncate_setsize(inode, iattr->ia_size);
     }
+
     setattr_copy(mnt_userns, inode, iattr);
     mark_inode_dirty(inode);
     return 0;

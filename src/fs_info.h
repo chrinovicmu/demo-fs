@@ -45,5 +45,9 @@ static int demofs_symlink(struct user_namespace *mnt_userns,
                           struct inode *dir,
                           struct dentry *dentry,
                           const char *symname);
+
  
+static int demofs_setattr(struct user_namespace *mnt_userns, 
+                          struct dentry *dentry,
+                          struct iattr *iattr); 
 #endif // !FS_INFO_H 
