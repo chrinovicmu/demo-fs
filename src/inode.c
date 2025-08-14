@@ -1,3 +1,5 @@
+#include <cerrno>
+#include <cstring>
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/printk.h>
@@ -6,35 +8,35 @@
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/cred.h>
+#include <linux/namei.h>
 #include <linux/dcache.h>
 #include <linux/export.h>
 #include <linux/fs_types.h>
 #include <linux/mm_types.h>
 #include <linux/stat.h>
 
-#include "fs_info.h"
+#include "asm-generic/int-ll64.h"
+#include "demofs_info.h"
+#include "linux/spinlock.h"
+#include "utils.h"
 #include "my_idmap.h"
 
 static int demofs_open(struct inode*, struct file*);
 static int demofs_release(struct inode*, struct file*); 
 static ssize_t demofs_read(struct file *, char __user *, size_t, loff_t*);
 static ssize_t demofs_write(struct file *, const char __user*, size_t, loff_t*); 
-static int demofs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, struct iattr *iattr);
+static int demofs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry, struct iattr *iattr);
 
-enum demofs_file_state
-{
-    FILE_NOT_USED, 
-    FILE_EXCLUSIVE_OPEN, 
-}; 
-
-struct demofs_file_info  
-{
-    atomic_t already_open; 
-    char *kbuf;
-    size_t data_size; 
-    int error_pending; 
-}; 
-
+static int demofs_iterate(struct file *file, struct dir_context *ctx);
+static int demofs_subdir_create(struct user_namespace *mnt_userns,
+                                struct inode *dir, struct dentry *dentry,
+                                umode_t mode, bool excl);
+static int demofs_subdir_mkdir(struct user_namespace *mnt_userns,
+                               struct inode *dir, struct dentry *dentry,
+                               umode_t mode);
+static struct inode *demofs_make_inode(struct user_namespace *mnt_userns,
+                                       struct super_block *sb, umode_t mode,
+                                       dev_t dev);
 static int demofs_open(struct inode *inode, struct file *file)
 {
     struct demofs_file_info *info = inode->i_private; 
@@ -228,9 +230,9 @@ static int demofs_subdir_create(struct user_namespace *mnt_userns,
     inode->i_op = &demofs_file_iops; 
     inode->i_fop = &demofs_file_fops; 
 
-    d_instantiate(dentry, inode);
-    inc_nlink(dir);
-    mark_inode_dirty(dir); 
+    // d_instantiate(dentry, inode);
+   //  inc_nlink(dir);
+   // mark_inode_dirty(dir); 
 
     return 0; 
 }
@@ -384,7 +386,8 @@ static int demofs_mkdir(struct user_namespace *mnt_userns,
 
     inode->i_op = &demofs_dir_iops;
     inode->i_fop = &demofs_dir_fops;
-
+    
+    inode->i_nlink = 2; 
     inc_nlink(dir);
     d_instantiate(dentry, inode);
     dget(dentry);
@@ -436,12 +439,16 @@ static int demofs_symlink(struct user_namespace *mnt_userns,
     return page_symlink(inode, symname, strlen(symname)); 
 }
 
+/*called when changing file attributes such as permissons and timestamps &*/ 
+
 static int demofs_setattr(struct user_namespace *mnt_userns, 
                           struct dentry *dentry,
                           struct iattr *iattr)
 {
-    struct inode *inode = d_inode(dentry);
-    struct demofs_file_info *info = inode->i_private;
+    struct inode *inode = d_inode(dentry); 
+    struct demofs_file_info *file_info = inode->i_private; 
+    struct demofs_fs_info *fs_info = inode->i_sb->s_fs_info; 
+
     int error;
 
     error = setattr_prepare(mnt_userns, dentry, iattr);
@@ -450,17 +457,63 @@ static int demofs_setattr(struct user_namespace *mnt_userns,
 
     if ((iattr->ia_valid & ATTR_SIZE) && iattr->ia_size != inode->i_size) 
     {
-        char *new_buf = krealloc(info->kbuf, iattr->ia_size, GFP_KERNEL);
+        u64 old_bytes = file_info ? file_info->data_size : 0; 
+        u64 new_bytes = iattr->ia_size; 
+        u64 old_blocks = demofs_bytes_to_blocks(old_bytes, fs_info->block_size); 
+        u64 new_blocks = demofs_bytes_to_blocks(new_bytes, fs_info->block_size); 
 
-        if (!new_buf && iattr->ia_size > 0)
-            return -ENOMEM;
+        /*case 1: file is growing */ 
+        if(new_blocks > old_blocks)
+        {
+            u64 need = new_blocks - old_blocks; 
+            spin_lock(&fs_info->lock); 
 
-        if (iattr->ia_size > info->data_size)
-            memset(new_buf + info->data_size, 0, iattr->ia_size - info->data_size);
+            if(fs_info->free_blocks < need)
+            {
+                spin_unlock(&fs_info->lock); 
+                return -ENOSPC; 
+            }
+            
+            fs_info->free_blocks -= need; 
+            fs_info->avail_blocks = fs_info->free_blocks; 
 
-        info->kbuf = new_buf;
-        info->data_size = iattr->ia_size;
-        truncate_setsize(inode, iattr->ia_size);
+        }
+
+        /*case 2: file is being reduced in sized */ 
+        else if (old_blocks > new_blocks)
+        {
+            u64 give = old_blocks - new_blocks; 
+            spin_lock(&fs_info->lock);
+
+            fs_info->free_blocks += give; 
+            fs_info->avail_blocks = fs_info->free_blocks; 
+            spin_unlock(&fs_info->lock); 
+        }
+
+        if(file_info)
+        {
+            char *new_buf = krealloc(file_info->kbuf, new_bytes, GFP_KERNEL); 
+            if(!new_buf && new_bytes > 0)
+            {
+                spin_lock(&fs_info->lock); 
+
+                if(new_blocks > old_blocks)
+                    fs_info->free_blocks += (new_blocks - old_blocks); 
+
+                fs_info->avail_blocks = fs_info->free_blocks; 
+                spin_unlock(&fs_info->lock); 
+
+                return -ENOMEM; 
+            }
+
+            if(new_bytes > old_bytes)
+                memset(new_buf + old_bytes, 0, new_bytes - old_bytes); 
+
+            file_info->kbuf = new_buf; 
+            file_info->data_size = new_bytes; 
+        }
+
+        truncate_setsize(mnt_userns, inode, iattr->ia_size);
     }
 
     setattr_copy(mnt_userns, inode, iattr);
