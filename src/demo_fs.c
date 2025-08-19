@@ -48,7 +48,7 @@ static int demofs_statfs(struct dentry *dentry, struct kstatfs *buf)
 
 static int demofs_show_options(struct seq_file *m, struct dentry *root)
 {
-    seq_printf(m, "block_size=%u,max_inodes=%llu", DEMOFS_BLOCK_SIZE, DEMOFS_INODES_TOTAL);
+    seq_printf(m, "block_size=%u,max_inodes=%u", DEMOFS_BLOCK_SIZE, DEMOFS_INODES_TOTAL);
     return 0; 
 }
 

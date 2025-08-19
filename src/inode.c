@@ -258,7 +258,7 @@ static int demofs_subdir_mkdir(struct user_namespace *mnt_userns,
     inode->i_op = &demofs_dir_iops; 
     inode->i_fop = &demofs_dir_fops; 
 
-    inode->i_nlink = 2; 
+    set_nlink(inode, 2); 
     inc_nlink(dir);
     d_instantiate(dentry, inode);
     dget(dentry); 
@@ -426,7 +426,7 @@ int demofs_mkdir(struct user_namespace *mnt_userns,
     inode->i_op = &demofs_dir_iops;
     inode->i_fop = &demofs_dir_fops;
     
-    inode->i_nlink = 2; 
+    set_nlink(inode, 2);  
     inc_nlink(dir);
     d_instantiate(dentry, inode);
     dget(dentry);
@@ -552,7 +552,7 @@ int demofs_setattr(struct user_namespace *mnt_userns,
             file_info->data_size = new_bytes; 
         }
 
-        truncate_setsize(mnt_userns, inode, iattr->ia_size);
+        truncate_setsize(inode, iattr->ia_size);
     }
 
     setattr_copy(mnt_userns, inode, iattr);
