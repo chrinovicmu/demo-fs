@@ -1,30 +1,27 @@
+# Get the path to the kernel build directory. This is the standard way to build
+# external modules.
+KDIR ?= /lib/modules/$(shell uname -r)/build
 
-MODULE_NAME := demofs
+# Get the current directory of the module source code
+PWD := $(shell pwd)
 
-SRC_DIR := src
-BUILD_DIR := builds
+# The name of your module's compiled object file (will be demofs.o)
+obj-m := demofs.o
 
-SRC_FILES := $(wildcard $(SRC_DIR)/*.c)
+# The list of object files to be linked into demofs.o.
+# This specifies that demo_fs.o and inode.o (from the src/ directory) are
+# part of the final module.
+demofs-objs := src/demo_fs.o src/inode.o
 
-KDIR := /lib/modules/$(shell uname -r)/build
-PWD  := $(shell pwd)
-
-obj-m := $(MODULE_NAME).o
-$(MODULE_NAME)-y := $(notdir $(SRC_FILES:.c=.o))
-
-$(shell mkdir -p $(BUILD_DIR))
-
+# The 'all' target is the default one and is used to build the module.
+# It invokes the kernel's build system to compile the module.
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD)/$(BUILD_DIR) src=$(PWD)/$(SRC_DIR) modules
+	@echo "Building demofs module..."
+	$(MAKE) -C $(KDIR) M=$(PWD) O=$(PWD)/builds modules
 
+# The 'clean' target is used to remove all build artifacts.
+# It uses the kernel's build system to clean up and also removes the local
+# 'builds' directory.
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD)/$(BUILD_DIR) clean
-	rm -rf $(BUILD_DIR)/*
-
-install: all
-	sudo insmod $(BUILD_DIR)/$(MODULE_NAME).ko
-
-uninstall:
-	sudo rmmod $(MODULE_NAME)
-
-.PHONY: all clean install uninstall
+	$(MAKE) -C $(KDIR) M=$(PWD) O=$(PWD)/builds clean
+	rm -rf builds

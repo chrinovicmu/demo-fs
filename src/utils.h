@@ -2,9 +2,9 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#include <linux/types.h>
 #include <linux/fs.h>
 #include <linux/spinlock.h>
-#include <linux/types.h>
 #include "demofs_info.h"
 /* Convert bytes to number of blocks needed */
 static inline u64 demofs_bytes_to_blocks(u64 bytes, u32 block_size)

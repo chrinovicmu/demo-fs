@@ -1,9 +1,11 @@
+#include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/printk.h>
 #include <linux/dcache.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/seq_file.h>
 #include <linux/statfs.h>
 #include <linux/cred.h>
 #include <linux/err.h>
@@ -11,6 +13,7 @@
 #include <linux/log2.h>
 #include <linux/minmax.h>
 #include <linux/spinlock.h>
+#include <linux/stat.h>
 
 #include "demofs_info.h"
 #include "utils.h"
@@ -43,10 +46,18 @@ static int demofs_statfs(struct dentry *dentry, struct kstatfs *buf)
     return 0; 
 }
 
+static int demofs_show_options(struct seq_file *m, struct dentry *root)
+{
+    seq_printf(m, "block_size=%u,max_inodes=%llu", DEMOFS_BLOCK_SIZE, DEMOFS_INODES_TOTAL);
+    return 0; 
+}
+
 static struct super_operations demofs_super_ops =
 {
         .statfs = demofs_statfs,  
         .put_super = demofs_put_super, 
+        .drop_inode = generic_delete_inode, 
+        .show_options = demofs_show_options, 
 }; 
 
 static struct inode_operations demofs_root_dir_iops = 
@@ -79,11 +90,11 @@ static int demofs_fill_super(struct super_block *sb, void * data, int silent)
     struct demofs_fs_info *fs_info;     
     size_t fs_bytes;
 
-    fs_info = kzalloc(sizeof(struct demofs_fs_info *), GFP_KERNEL); 
+    fs_info = kzalloc(sizeof(struct demofs_fs_info), GFP_KERNEL); 
     if(!fs_info)
         return -ENOMEM; 
 
-    fs_bytes = DEMOFS_DEFAULT_SIZE_MB * 1024ULL *1023ULL; 
+    fs_bytes = DEMOFS_DEFAULT_SIZE_MB * 1024ULL *1024ULL; 
 
     fs_info->block_size = PAGE_SIZE; 
     fs_info->fragment_size = fs_info->block_size;
@@ -100,7 +111,7 @@ static int demofs_fill_super(struct super_block *sb, void * data, int silent)
     fs_info->total_inodes = max_t(u64, 16, fs_info->total_blocks / 16);
     fs_info->free_inodes = fs_info->total_inodes; 
 
-    spinlock_init(&fs_info->lock); 
+    spin_lock_init(&fs_info->lock); 
 
     sb->s_fs_info = fs_info; 
     sb->s_magic = fs_info->fs_magic; 
@@ -112,7 +123,7 @@ static int demofs_fill_super(struct super_block *sb, void * data, int silent)
     if(!root_inode)
         return -ENOMEM; 
 
-    inode_init_owner(&init_user_ns, root_inode, NULL, S_IFREG | 0755); 
+    inode_init_owner(&init_user_ns, root_inode, NULL, S_IFDIR | 0755); 
     root_inode->i_sb = sb; 
     root_inode->i_atime = root_inode->i_ctime = current_time(root_inode); 
     root_inode->i_fop = &demofs_root_dir_fops; 
@@ -120,8 +131,10 @@ static int demofs_fill_super(struct super_block *sb, void * data, int silent)
 
     sb->s_root = d_make_root(root_inode); 
     if(!sb->s_root)
+    {
+        iput(root_inode);
         return -ENOMEM; 
-    
+    }
     return 0; 
 }
 static struct dentry *demofs_mount(struct file_system_type *fs_type, int flags,

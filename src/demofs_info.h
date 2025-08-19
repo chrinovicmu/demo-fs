@@ -1,9 +1,9 @@
 #ifndef FS_INFO_H 
 #define FS_INFO_H
 
+#include <linux/types.h>
 #include <linux/dcache.h> 
 #include <linux/fs.h>
-#include <linux/types.h>
 #include "linux/cred.h"
 #include "linux/spinlock_types.h"
 #include "my_idmap.h"
@@ -48,33 +48,32 @@ struct demofs_file_info
     int error_pending; 
 }; 
 
-static int demofs_iterate(struct file *file, struct dir_context *ctx); 
+int demofs_iterate(struct file *file, struct dir_context *ctx); 
 
-static int demofs_create(struct user_namespace *mnt_userns,
+int demofs_create(struct user_namespace *mnt_userns,
                          struct inode *dir,
                          struct dentry *dentry,
                          umode_t mode,
                          bool excl);
 
-static int demofs_mkdir(struct user_namespace *mnt_userns,
+int demofs_mkdir(struct user_namespace *mnt_userns,
                         struct inode *dir,
                         struct dentry *dentry,
                         umode_t mode);
 
-static int demofs_mknod(struct user_namespace *mnt_userns,
+int demofs_mknod(struct user_namespace *mnt_userns,
                         struct inode *dir,
                         struct dentry *dentry,
                         umode_t mode,
                         dev_t dev);
 
-static int demofs_symlink(struct user_namespace *mnt_userns,
+int demofs_symlink(struct user_namespace *mnt_userns,
                           struct inode *dir,
                           struct dentry *dentry,
                           const char *symname);
 
  
-static int demofs_setattr(struct user_namespace *mnt_userns, 
+int demofs_setattr(struct user_namespace *mnt_userns, 
                           struct dentry *dentry,
                           struct iattr *iattr); 
-
 #endif // !FS_INFO_H 

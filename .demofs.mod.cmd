@@ -1,0 +1,1 @@
+cmd_/home/chrinovic/Tech/Projects/demofs/demofs.mod := printf '%s\n'   src/demo_fs.o src/inode.o | awk '!x[$$0]++ { print("/home/chrinovic/Tech/Projects/demofs/"$$0) }' > /home/chrinovic/Tech/Projects/demofs/demofs.mod

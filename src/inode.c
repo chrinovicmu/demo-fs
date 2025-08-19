@@ -1,5 +1,4 @@
-#include <cerrno>
-#include <cstring>
+#include <linux/types.h>
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/printk.h>
@@ -14,9 +13,10 @@
 #include <linux/fs_types.h>
 #include <linux/mm_types.h>
 #include <linux/stat.h>
+#include <linux/pagemap.h>
 
-#include "asm-generic/int-ll64.h"
 #include "demofs_info.h"
+#include "linux/cleanup.h"
 #include "linux/spinlock.h"
 #include "utils.h"
 #include "my_idmap.h"
@@ -25,15 +25,18 @@ static int demofs_open(struct inode*, struct file*);
 static int demofs_release(struct inode*, struct file*); 
 static ssize_t demofs_read(struct file *, char __user *, size_t, loff_t*);
 static ssize_t demofs_write(struct file *, const char __user*, size_t, loff_t*); 
-static int demofs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry, struct iattr *iattr);
+ int demofs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry, struct iattr *iattr);
 
-static int demofs_iterate(struct file *file, struct dir_context *ctx);
+ int demofs_iterate(struct file *file, struct dir_context *ctx);
 static int demofs_subdir_create(struct user_namespace *mnt_userns,
                                 struct inode *dir, struct dentry *dentry,
                                 umode_t mode, bool excl);
 static int demofs_subdir_mkdir(struct user_namespace *mnt_userns,
                                struct inode *dir, struct dentry *dentry,
                                umode_t mode);
+static int demofs_unlink(struct inode *dit, struct dentry *dentry); 
+static int demofs_rmdir(struct inode *dir, struct dentry *dentry); 
+
 static struct inode *demofs_make_inode(struct user_namespace *mnt_userns,
                                        struct super_block *sb, umode_t mode,
                                        dev_t dev);
@@ -154,7 +157,7 @@ static struct inode_operations demofs_file_iops =
     .getattr = simple_getattr, 
 }; 
 
-static int demofs_iterate(struct file *file, struct dir_context *ctx)
+int demofs_iterate(struct file *file, struct dir_context *ctx)
 {
     struct inode *inode = file_inode(file); 
     u64 ino = inode->i_ino; 
@@ -192,8 +195,8 @@ static const struct inode_operations demofs_dir_iops =
     .lookup     = simple_lookup, 
     .create     = demofs_subdir_create, 
     .mkdir      = demofs_subdir_mkdir, 
-    .unlink     = simple_unlink, 
-    .rmdir      = simple_rmdir, 
+    .unlink     = demofs_unlink, 
+    .rmdir      = demofs_rmdir, 
     .rename     = simple_rename, 
     .getattr    = simple_getattr, 
 }; 
@@ -264,10 +267,44 @@ static int demofs_subdir_mkdir(struct user_namespace *mnt_userns,
     return 0; 
 }
 
+static int demofs_unlink(struct inode *dir, struct dentry  *dentry)
+{
+    struct super_block *sb = dir->i_sb; 
+    int ret; 
+    
+    ret = simple_unlink(dir, dentry); 
+    if(ret == 0)
+    {
+        demofs_inc_free_inodes(sb); 
+    }
+    return ret; 
+}
+
+static int demofs_rmdir(struct inode *dir, struct dentry *dentry)
+{
+    int ret; 
+
+    ret = simple_rmdir(dir, dentry);
+    if(!ret)
+    {
+        demofs_inc_free_inodes(dir->i_sb); 
+    }
+
+    return 0; 
+}
 const struct inode_operations demofs_special_iops = 
 {
     .getattr = simple_getattr, 
 }; 
+
+/* 
+static const struct address_space_operations demofs_aops =
+{
+        .readahead = generic_file_read_iter, 
+        .write_iter = generic_file_write_iter, 
+        .mappings_flag = 0;  
+}; 
+*/ 
 
 static struct inode *demofs_make_inode(struct user_namespace *mnt_userns,
                                        struct super_block *sb,
@@ -337,6 +374,8 @@ int demofs_create(struct user_namespace *mnt_userns,
     if (!inode)
         return -ENOMEM;
 
+    demofs_dec_free_nodes(inode->i_sb); 
+
     info = kzalloc(sizeof(*info), GFP_KERNEL);
     if (!info) 
     {
@@ -368,7 +407,7 @@ int demofs_create(struct user_namespace *mnt_userns,
     return 0;
 }
 
-static int demofs_mkdir(struct user_namespace *mnt_userns,
+int demofs_mkdir(struct user_namespace *mnt_userns,
                         struct inode *dir,
                         struct dentry *dentry,
                         umode_t mode)
@@ -395,7 +434,7 @@ static int demofs_mkdir(struct user_namespace *mnt_userns,
     return 0;
 }
 
-static int demofs_mknod(struct user_namespace *mnt_userns,
+int demofs_mknod(struct user_namespace *mnt_userns,
                         struct inode *dir,
                         struct dentry *dentry,
                         umode_t mode,
@@ -413,7 +452,7 @@ static int demofs_mknod(struct user_namespace *mnt_userns,
     return 0;
 }
 
-static int demofs_symlink(struct user_namespace *mnt_userns,
+int demofs_symlink(struct user_namespace *mnt_userns,
                           struct inode *dir,
                           struct dentry *dentry, 
                           const char *symname)
@@ -441,7 +480,7 @@ static int demofs_symlink(struct user_namespace *mnt_userns,
 
 /*called when changing file attributes such as permissons and timestamps &*/ 
 
-static int demofs_setattr(struct user_namespace *mnt_userns, 
+int demofs_setattr(struct user_namespace *mnt_userns, 
                           struct dentry *dentry,
                           struct iattr *iattr)
 {
