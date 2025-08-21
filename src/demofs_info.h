@@ -7,9 +7,10 @@
 #include "linux/cred.h"
 #include "linux/spinlock_types.h"
 #include "my_idmap.h"
+#include "linux/list.h"
 
 #define DEMO_MAJIC 0x12345678 
-#define FS_NAME "demo_fs"
+#define FS_NAME "demofs"
 
 #define DEMOFS_TOTAL_SIZE (4 * 1024 * 1024)
 #define DEMOFS_INODES_TOTAL 100
@@ -17,6 +18,20 @@
 #define DEMOFS_NAME_LEN_MAX 255
 
 #define DEMOFS_DEFAULT_SIZE_MB 16 
+
+struct demofs_dentry
+{
+    char name[DEMOFS_NAME_LEN_MAX]; 
+    struct inode *inode; 
+    umode_t mode; 
+    struct list_head list; 
+}; 
+
+struct demofs_inode
+{
+    struct inode vsf_inode; 
+    struct list_head children; 
+}; 
 
 struct demofs_fs_info 
 {

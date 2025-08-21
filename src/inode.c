@@ -2,7 +2,6 @@
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/printk.h>
-#include <linux/types.h>
 #include <linux/atomic.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
@@ -14,10 +13,17 @@
 #include <linux/mm_types.h>
 #include <linux/stat.h>
 #include <linux/pagemap.h>
+#include <linux/container_of.h>
+#include <linux/fortify-string.h>
+#include <linux/gfp_types.h>
+#include <linux/limits.h>
+#include <linux/list.h>
+#include <linux/rculist.h>
+#include <linux/spinlock.h>
+#include <linux/stddef.h>
+#include <linux/string.h>
 
 #include "demofs_info.h"
-#include "linux/cleanup.h"
-#include "linux/spinlock.h"
 #include "utils.h"
 #include "my_idmap.h"
 
@@ -25,9 +31,9 @@ static int demofs_open(struct inode*, struct file*);
 static int demofs_release(struct inode*, struct file*); 
 static ssize_t demofs_read(struct file *, char __user *, size_t, loff_t*);
 static ssize_t demofs_write(struct file *, const char __user*, size_t, loff_t*); 
- int demofs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry, struct iattr *iattr);
+int demofs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry, struct iattr *iattr);
 
- int demofs_iterate(struct file *file, struct dir_context *ctx);
+int demofs_iterate(struct file *file, struct dir_context *ctx);
 static int demofs_subdir_create(struct user_namespace *mnt_userns,
                                 struct inode *dir, struct dentry *dentry,
                                 umode_t mode, bool excl);
@@ -160,28 +166,24 @@ static struct inode_operations demofs_file_iops =
 int demofs_iterate(struct file *file, struct dir_context *ctx)
 {
     struct inode *inode = file_inode(file); 
-    u64 ino = inode->i_ino; 
+    struct demofs_inode *di = container_of(inode, struct demofs_inode, vsf_inode);
+    struct demofs_dentry *dentry; 
+    int i = 0 ; 
 
-    pr_info("%s: readdir called\n", FS_NAME); 
-
-    if (ctx->pos == 0) {
-        if (!dir_emit(ctx, ".", 1, ino, DT_DIR))
-            return 0; 
+    list_for_each_entry(dentry, &di->children,list)
+    {
+        if(i < ctx->pos)
+        {
+            i++; 
+            continue; 
+        }
+        if(!dir_emit(ctx, dentry->name, strlen(dentry->name), 
+                     dentry->inode->i_ino, 
+                     S_ISDIR(dentry->mode) ? DT_DIR : DT_REG))
+            return 0;  
         ctx->pos++; 
+        i++; 
     }
-
-    if (ctx->pos == 1) {
-        if (!dir_emit(ctx, "..", 2, 2, DT_DIR))
-            return 0; 
-        ctx->pos++; 
-    }
-
-    if (ctx->pos == 2) {
-        if (!dir_emit(ctx, "file1", 5, 12345, DT_REG))
-            return 0; 
-        ctx->pos++; 
-    }
-
     return 0; 
 }
 
@@ -366,6 +368,8 @@ int demofs_create(struct user_namespace *mnt_userns,
 {
     struct inode *inode;
     struct demofs_file_info *info;
+    struct demofs_inode *parent_di;
+    struct demofs_dentry *new_entry;
 
     if (d_inode(dentry))
         return -EEXIST;
@@ -374,62 +378,109 @@ int demofs_create(struct user_namespace *mnt_userns,
     if (!inode)
         return -ENOMEM;
 
-    demofs_dec_free_nodes(inode->i_sb); 
+    inode->i_ino = get_next_ino(); // assign inode number
 
     info = kzalloc(sizeof(*info), GFP_KERNEL);
-    if (!info) 
-    {
+    if (!info) {
         iput(inode);
         return -ENOMEM;
     }
 
-    atomic_set(&info->already_open, FILE_NOT_USED); 
-
-    info->kbuf = NULL; 
-    info->data_size = 0; 
-    info->error_pending = 0; 
+    atomic_set(&info->already_open, FILE_NOT_USED);
+    info->kbuf = NULL;
+    info->data_size = 0;
+    info->error_pending = 0;
     inode->i_private = info;
 
     inode->i_uid = make_kuid(mnt_userns, from_kuid(&init_user_ns, current_fsuid()));
     inode->i_gid = make_kgid(mnt_userns, from_kgid(&init_user_ns, current_fsgid()));
     inode->i_mode = mode;
-
-    inode->i_op = &demofs_file_iops; 
+    inode->i_op = &demofs_file_iops;
     inode->i_fop = &demofs_file_fops;
-
     inode->i_mtime = inode->i_ctime = inode->i_atime = current_time(inode);
 
     d_instantiate(dentry, inode);
     dget(dentry);
-
     mark_inode_dirty(inode);
+
+    // ensure parent i_private exists
+    parent_di = dir->i_private;
+    if (!parent_di) {
+        parent_di = kzalloc(sizeof(*parent_di), GFP_KERNEL);
+        if (!parent_di) {
+            iput(inode);
+            return -ENOMEM;
+        }
+        INIT_LIST_HEAD(&parent_di->children);
+        dir->i_private = parent_di;
+    }
+
+    new_entry = kzalloc(sizeof(*new_entry), GFP_KERNEL);
+    if (!new_entry) {
+        iput(inode);
+        return -ENOMEM;
+    }
+
+    strlcpy(new_entry->name, dentry->d_name.name, DEMOFS_NAME_LEN_MAX);
+    new_entry->inode = inode;
+    new_entry->mode = mode;
+    INIT_LIST_HEAD(&new_entry->list);
+
+    list_add_tail(&new_entry->list, &parent_di->children);
 
     return 0;
 }
 
+
 int demofs_mkdir(struct user_namespace *mnt_userns,
-                        struct inode *dir,
-                        struct dentry *dentry,
-                        umode_t mode)
+                 struct inode *dir,
+                 struct dentry *dentry,
+                 umode_t mode)
 {
     struct inode *inode;
+    struct demofs_inode *parent_di;
+    struct demofs_dentry *new_entry;
 
     inode = new_inode(dir->i_sb);
     if (!inode)
         return -ENOMEM;
 
-    inode->i_ino = get_next_ino();
-
+    inode->i_ino = get_next_ino(); // assign inode number
     inode_init_owner(mnt_userns, inode, dir, S_IFDIR | mode);
     inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
-
     inode->i_op = &demofs_dir_iops;
     inode->i_fop = &demofs_dir_fops;
-    
-    set_nlink(inode, 2);  
+
+    set_nlink(inode, 2);
     inc_nlink(dir);
+
     d_instantiate(dentry, inode);
     dget(dentry);
+
+    // ensure parent i_private exists
+    parent_di = dir->i_private;
+    if (!parent_di) {
+        parent_di = kzalloc(sizeof(*parent_di), GFP_KERNEL);
+        if (!parent_di) {
+            iput(inode);
+            return -ENOMEM;
+        }
+        INIT_LIST_HEAD(&parent_di->children);
+        dir->i_private = parent_di;
+    }
+
+    new_entry = kzalloc(sizeof(*new_entry), GFP_KERNEL);
+    if (!new_entry) {
+        iput(inode);
+        return -ENOMEM;
+    }
+
+    strlcpy(new_entry->name, dentry->d_name.name, DEMOFS_NAME_LEN_MAX);
+    new_entry->inode = inode;
+    new_entry->mode = S_IFDIR | mode;
+    INIT_LIST_HEAD(&new_entry->list);
+
+    list_add_tail(&new_entry->list, &parent_di->children);
 
     return 0;
 }
